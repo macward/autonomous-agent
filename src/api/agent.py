@@ -89,6 +89,11 @@ class AgentOrchestrator:
                 # Handle error response
                 if response.response_type == ResponseType.ERROR:
                     logger.error(f"LLM error: {response.error}")
+                    self.repository.update_request_status(
+                        request_id,
+                        RequestStatus.FAILED,
+                        error=response.error,
+                    )
                     return AgentResult(
                         status=AgentRunStatus.ERROR,
                         error=response.error,
