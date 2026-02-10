@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__vibeMCP__tool_init_project",
+      "mcp__vibeMCP__list_tasks",
+      "mcp__vibeMCP__get_plan",
+      "mcp__vibeMCP__tool_create_task",
+      "mcp__vibeMCP__tool_create_doc",
+      "mcp__vibeMCP__read_doc",
+      "mcp__vibeMCP__tool_update_task_status",
+      "Bash(uv sync:*)",
+      "Bash(pip install:*)",
+      "Bash(uv run:*)"
+    ]
+  }
+}
