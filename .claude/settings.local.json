@@ -10,7 +10,8 @@
       "mcp__vibeMCP__tool_update_task_status",
       "Bash(uv sync:*)",
       "Bash(pip install:*)",
-      "Bash(uv run:*)"
+      "Bash(uv run:*)",
+      "mcp__vibeMCP__tool_log_session"
     ]
   }
 }
