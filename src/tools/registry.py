@@ -3,7 +3,7 @@
 from typing import Any
 
 import jsonschema
-from jsonschema import Draft7Validator, ValidationError
+from jsonschema import Draft7Validator
 
 from src.core.logging import get_logger
 from src.tools.base import Tool, ToolValidationError
@@ -41,7 +41,7 @@ class ToolRegistry:
         try:
             Draft7Validator.check_schema(tool.input_schema)
         except jsonschema.SchemaError as e:
-            raise ValueError(f"Tool '{name}' has invalid input schema: {e.message}")
+            raise ValueError(f"Tool '{name}' has invalid input schema: {e.message}") from e
 
         # Create and cache validator
         self._validators[name] = Draft7Validator(tool.input_schema)

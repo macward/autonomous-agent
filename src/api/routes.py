@@ -3,56 +3,38 @@
 import time
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from src.api.agent import AgentOrchestrator
 from src.api.auth import RequireAPIKey
 from src.api.schemas import (
     AgentRunRequest,
     AgentRunResponse,
-    AgentRunStatus,
     ErrorResponse,
     HealthResponse,
 )
-from src.core.config import get_settings
 from src.core.logging import get_logger
-from src.llm.anthropic_connector import AnthropicConnector
-from src.storage.database import get_database
-from src.storage.repository import AuditRepository
-from src.tools.builtin import register_builtin_tools
-from src.tools.executor import ToolExecutor
-from src.tools.registry import ToolRegistry
 
 logger = get_logger("api.routes")
 
 router = APIRouter()
 
+# Rate limiter instance - will use app.state.limiter if available
+limiter = Limiter(key_func=get_remote_address)
 
-def _get_orchestrator() -> AgentOrchestrator:
-    """Create and configure the agent orchestrator."""
-    settings = get_settings()
 
-    # Initialize components
-    registry = ToolRegistry()
-    db = get_database()
-    repository = AuditRepository(db=db)
-    executor = ToolExecutor(registry=registry, repository=repository, settings=settings)
+def get_orchestrator(request: Request) -> AgentOrchestrator:
+    """Get the orchestrator from app state.
 
-    # Register built-in tools
-    register_builtin_tools(registry, executor)
+    Args:
+        request: FastAPI request with app state
 
-    # Initialize LLM connector
-    llm = AnthropicConnector(
-        api_key=settings.llm_api_key,
-        model=settings.llm_model,
-    )
-
-    return AgentOrchestrator(
-        llm=llm,
-        registry=registry,
-        executor=executor,
-        repository=repository,
-    )
+    Returns:
+        Configured AgentOrchestrator
+    """
+    return request.app.state.orchestrator
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -73,11 +55,14 @@ async def health_check() -> HealthResponse:
     response_model=AgentRunResponse,
     responses={
         401: {"model": ErrorResponse, "description": "Invalid or missing API key"},
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
         500: {"model": ErrorResponse, "description": "Internal server error"},
     },
 )
+@limiter.limit("10/minute")
 async def agent_run(
-    request: AgentRunRequest,
+    request: Request,
+    body: AgentRunRequest,
     api_key: RequireAPIKey,
 ) -> AgentRunResponse:
     """Execute the agent with the given input.
@@ -92,19 +77,19 @@ async def agent_run(
     start_time = time.perf_counter()
     created_at = datetime.now(UTC)
 
-    logger.info(f"Agent run request: {len(request.input)} chars")
+    logger.info(f"Agent run request: {len(body.input)} chars")
 
     try:
-        # Get orchestrator
-        orchestrator = _get_orchestrator()
+        # Get orchestrator from app state
+        orchestrator = get_orchestrator(request)
 
         # Create audit request
-        audit_request = orchestrator.repository.create_request(request.input)
+        audit_request = await orchestrator.repository.create_request(body.input)
         request_id = audit_request.id
 
         # Run agent
         result = await orchestrator.run(
-            input_text=request.input,
+            input_text=body.input,
             request_id=request_id,
         )
 
@@ -122,9 +107,8 @@ async def agent_run(
 
     except Exception as e:
         logger.exception("Unexpected error in agent_run")
-        duration_ms = int((time.perf_counter() - start_time) * 1000)
 
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal error: {type(e).__name__}",
-        )
+        ) from e

@@ -26,6 +26,7 @@ class ExecutionResultStatus(str, Enum):
     EXECUTION_ERROR = "execution_error"
     TIMEOUT = "timeout"
     OUTPUT_TRUNCATED = "output_truncated"
+    PERMISSION_DENIED = "permission_denied"
 
 
 @dataclass
@@ -54,6 +55,7 @@ class ToolExecutor:
 
     Security features:
     - Input validation against JSON Schema
+    - Permission enforcement
     - Execution timeouts
     - Output size limits
     - Workspace directory isolation
@@ -115,7 +117,27 @@ class ToolExecutor:
 
         return resolved
 
-    def _truncate_output(self, output: dict[str, Any], max_size: int) -> tuple[dict[str, Any], bool]:
+    def _check_permissions(self, tool: Tool) -> tuple[bool, str | None]:
+        """Check if tool permissions are allowed.
+
+        Args:
+            tool: Tool to check
+
+        Returns:
+            Tuple of (allowed, error_message)
+        """
+        blocked_permissions = self.settings.blocked_permissions
+        tool_permissions = tool.permissions
+
+        for perm in tool_permissions:
+            if perm in blocked_permissions:
+                return False, f"Permission '{perm.value}' is blocked by policy"
+
+        return True, None
+
+    def _truncate_output(
+        self, output: dict[str, Any], max_size: int
+    ) -> tuple[dict[str, Any], bool]:
         """Truncate output if it exceeds max size.
 
         Args:
@@ -171,7 +193,7 @@ class ToolExecutor:
         if tool is None:
             error_msg = f"Tool '{tool_name}' not found in registry"
             logger.warning(error_msg)
-            self._log_execution(
+            await self._log_execution(
                 tool_name, input_data, ExecutionStatus.FAILED, error=error_msg,
                 request_id=request_id, decision_id=decision_id,
             )
@@ -180,12 +202,25 @@ class ToolExecutor:
                 error=error_msg,
             )
 
+        # Check permissions
+        allowed, perm_error = self._check_permissions(tool)
+        if not allowed:
+            logger.warning(f"Permission denied for {tool_name}: {perm_error}")
+            await self._log_execution(
+                tool_name, input_data, ExecutionStatus.DENIED,
+                error=perm_error, request_id=request_id, decision_id=decision_id,
+            )
+            return ExecutionResult(
+                status=ExecutionResultStatus.PERMISSION_DENIED,
+                error=perm_error,
+            )
+
         # Validate input
         try:
             self.registry.validate_input(tool_name, input_data)
         except ToolValidationError as e:
             logger.warning(f"Validation failed for {tool_name}: {e.errors}")
-            self._log_execution(
+            await self._log_execution(
                 tool_name, input_data, ExecutionStatus.DENIED,
                 error=str(e), request_id=request_id, decision_id=decision_id,
             )
@@ -215,7 +250,7 @@ class ToolExecutor:
                 else ExecutionResultStatus.SUCCESS
             )
 
-            self._log_execution(
+            await self._log_execution(
                 tool_name, input_data, ExecutionStatus.SUCCESS,
                 output=json.dumps(output), duration_ms=duration_ms,
                 request_id=request_id, decision_id=decision_id,
@@ -229,12 +264,12 @@ class ToolExecutor:
                 truncated=truncated,
             )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             duration_ms = int((time.perf_counter() - start_time) * 1000)
             error_msg = f"Tool execution timed out after {timeout}s"
             logger.error(f"Tool {tool_name} timed out")
 
-            self._log_execution(
+            await self._log_execution(
                 tool_name, input_data, ExecutionStatus.TIMEOUT,
                 error=error_msg, duration_ms=duration_ms,
                 request_id=request_id, decision_id=decision_id,
@@ -250,7 +285,7 @@ class ToolExecutor:
             duration_ms = int((time.perf_counter() - start_time) * 1000)
             logger.error(f"Tool {tool_name} execution error: {e.message}")
 
-            self._log_execution(
+            await self._log_execution(
                 tool_name, input_data, ExecutionStatus.FAILED,
                 error=str(e), duration_ms=duration_ms,
                 request_id=request_id, decision_id=decision_id,
@@ -267,7 +302,7 @@ class ToolExecutor:
             error_msg = f"Unexpected error: {type(e).__name__}: {str(e)}"
             logger.exception(f"Unexpected error in tool {tool_name}")
 
-            self._log_execution(
+            await self._log_execution(
                 tool_name, input_data, ExecutionStatus.FAILED,
                 error=error_msg, duration_ms=duration_ms,
                 request_id=request_id, decision_id=decision_id,
@@ -279,7 +314,7 @@ class ToolExecutor:
                 duration_ms=duration_ms,
             )
 
-    def _log_execution(
+    async def _log_execution(
         self,
         tool_name: str,
         input_data: dict[str, Any],
@@ -307,7 +342,7 @@ class ToolExecutor:
 
         try:
             if decision_id and request_id:
-                self.repository.create_execution(
+                await self.repository.create_execution(
                     decision_id=decision_id,
                     request_id=request_id,
                     tool_name=tool_name,
@@ -319,7 +354,7 @@ class ToolExecutor:
                 )
             else:
                 # Log as audit entry if no decision context
-                self.repository.log(
+                await self.repository.log(
                     level="INFO" if status == ExecutionStatus.SUCCESS else "ERROR",
                     component="executor",
                     message=f"Tool execution: {tool_name} -> {status.value}",

@@ -29,12 +29,15 @@ class LLMResponse:
     response_type: ResponseType
     content: str | None = None
     tool_call: ToolCall | None = None
+    tool_use_id: str | None = None  # Anthropic tool_use block ID
     error: str | None = None
     raw_response: Any = None
     usage: dict[str, int] = field(default_factory=dict)
 
     @classmethod
-    def text(cls, content: str, raw: Any = None, usage: dict[str, int] | None = None) -> "LLMResponse":
+    def text(
+        cls, content: str, raw: Any = None, usage: dict[str, int] | None = None
+    ) -> "LLMResponse":
         """Create a text response."""
         return cls(
             response_type=ResponseType.TEXT,
@@ -44,18 +47,29 @@ class LLMResponse:
         )
 
     @classmethod
-    def tool(cls, name: str, arguments: dict[str, Any], raw: Any = None, usage: dict[str, int] | None = None) -> "LLMResponse":
+    def tool(
+        cls,
+        name: str,
+        arguments: dict[str, Any],
+        tool_use_id: str | None = None,
+        raw: Any = None,
+        usage: dict[str, int] | None = None,
+    ) -> "LLMResponse":
         """Create a tool call response."""
         return cls(
             response_type=ResponseType.TOOL_CALL,
             tool_call=ToolCall(name=name, arguments=arguments),
+            tool_use_id=tool_use_id,
             raw_response=raw,
             usage=usage or {},
         )
 
     @classmethod
-    def error(cls, message: str) -> "LLMResponse":
-        """Create an error response."""
+    def from_error(cls, message: str) -> "LLMResponse":
+        """Create an error response.
+
+        Note: Named 'from_error' to avoid shadowing the 'error' attribute.
+        """
         return cls(
             response_type=ResponseType.ERROR,
             error=message,
@@ -64,10 +78,22 @@ class LLMResponse:
 
 @dataclass
 class Message:
-    """A message in the conversation."""
+    """A message in the conversation.
 
-    role: str  # "user", "assistant", "system"
+    Supports both simple text messages and structured tool use messages.
+    """
+
+    role: str  # "user", "assistant"
     content: str
+
+    # Tool use fields (for assistant messages with tool_use blocks)
+    tool_use_id: str | None = None
+    tool_name: str | None = None
+    tool_input: dict[str, Any] | None = None
+
+    # Tool result fields (for user messages with tool_result blocks)
+    is_tool_result: bool = False
+    is_error: bool = False
 
 
 class LLMConnector(ABC):
@@ -92,29 +118,6 @@ class LLMConnector(ABC):
 
         Returns:
             LLM response (text, tool call, or error)
-        """
-        ...
-
-    @abstractmethod
-    async def complete_with_tool_result(
-        self,
-        messages: list[Message],
-        tool_name: str,
-        tool_result: str,
-        tools: list[dict[str, Any]] | None = None,
-        system_prompt: str | None = None,
-    ) -> LLMResponse:
-        """Continue conversation after a tool execution.
-
-        Args:
-            messages: Conversation history
-            tool_name: Name of the executed tool
-            tool_result: Result from tool execution
-            tools: Available tools in LLM format
-            system_prompt: Optional system prompt
-
-        Returns:
-            LLM response
         """
         ...
 

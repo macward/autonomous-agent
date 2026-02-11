@@ -7,10 +7,14 @@ Autonomous agent that runs persistently on a local server, capable of interpreti
 This agent is potentially dangerous if not properly constrained. Security measures include:
 
 - **Allowlist-only tool execution** - Only registered tools can be executed
+- **Permission enforcement** - Block dangerous permissions (network, execute) by default
 - **Isolated workspace** - All file operations restricted to workspace directory
 - **Path traversal protection** - Attempts to escape workspace are blocked
 - **JSON Schema validation** - All tool inputs validated against schemas
 - **Complete audit trail** - Every request, decision, and execution logged
+- **Rate limiting** - Configurable request limits per minute
+- **CORS protection** - Restrict allowed origins
+- **Request size limits** - Prevent oversized payloads
 - **Timeouts and limits** - All operations have configurable timeouts and output limits
 
 ## Quick Start
@@ -47,8 +51,9 @@ Edit `.env` with your settings:
 AGENT_API_KEY=your-secret-api-key-here
 
 # LLM Configuration (required)
-LLM_API_KEY=your-anthropic-api-key
-LLM_MODEL=claude-sonnet-4-20250514
+LLM_PROVIDER=anthropic  # or 'groq'
+LLM_API_KEY=your-api-key
+LLM_MODEL=claude-sonnet-4-20250514  # optional, defaults based on provider
 
 # Server (optional)
 HOST=127.0.0.1
@@ -59,6 +64,21 @@ DEBUG=false
 WORKSPACE_ROOT=./workspace
 MAX_TOOL_TIMEOUT=30
 MAX_OUTPUT_SIZE=10000
+
+# Permission enforcement (optional)
+# Comma-separated list: read, write, execute, network
+# Default blocks network and execute for security
+BLOCKED_PERMISSIONS=network,execute
+
+# Rate limiting (optional)
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_REQUESTS=10  # requests per minute
+
+# CORS (optional)
+CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+
+# Request limits (optional)
+MAX_REQUEST_SIZE=1048576  # 1MB default
 ```
 
 ### Running the Agent
@@ -140,11 +160,49 @@ Executes the agent with the given input. The agent will:
 - `error`: Agent encountered an error
 - `tool_error`: A tool execution failed
 
+**Rate Limiting:**
+
+The `/agent/run` endpoint is rate limited to 10 requests per minute by default. When exceeded, the API returns:
+
+```http
+HTTP/1.1 429 Too Many Requests
+Retry-After: 60
+
+{
+  "error": "Rate limit exceeded: 10 per 1 minute"
+}
+```
+
 ### Interactive Documentation
 
 When the server is running:
 - Swagger UI: http://127.0.0.1:8000/docs
 - ReDoc: http://127.0.0.1:8000/redoc
+
+## LLM Providers
+
+The agent supports multiple LLM providers:
+
+| Provider | Default Model | Environment Variable |
+|----------|---------------|---------------------|
+| `anthropic` | `claude-sonnet-4-20250514` | `LLM_API_KEY` (Anthropic API key) |
+| `groq` | `llama-3.3-70b-versatile` | `LLM_API_KEY` (Groq API key) |
+
+### Using Groq
+
+Groq provides fast inference for open-source models:
+
+```env
+LLM_PROVIDER=groq
+LLM_API_KEY=your-groq-api-key
+LLM_MODEL=llama-3.3-70b-versatile  # optional
+```
+
+Available Groq models with tool use support:
+- `llama-3.3-70b-versatile` (default)
+- `llama-3.1-70b-versatile`
+- `llama-3.1-8b-instant`
+- `mixtral-8x7b-32768`
 
 ## Available Tools
 
@@ -179,7 +237,7 @@ Read the contents of a text file within the workspace.
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                        Agent API                             │
-│                    (FastAPI + Auth)                          │
+│           (FastAPI + Auth + Rate Limiting + CORS)            │
 └─────────────────────┬───────────────────────────────────────┘
                       │
 ┌─────────────────────▼───────────────────────────────────────┐
@@ -189,8 +247,8 @@ Read the contents of a text file within the workspace.
        │              │                       │
 ┌──────▼──────┐ ┌─────▼─────┐ ┌───────────────▼───────────────┐
 │    LLM      │ │   Tool    │ │         Storage               │
-│  Connector  │ │  Executor │ │   (SQLite Audit Trail)        │
-│ (Anthropic) │ │           │ │                               │
+│  Connector  │ │  Executor │ │  (Async SQLite + Pool)        │
+│ (Anthropic) │ │ +Perms    │ │                               │
 └─────────────┘ └─────┬─────┘ └───────────────────────────────┘
                       │
               ┌───────▼───────┐
@@ -232,8 +290,11 @@ uv run ruff format src tests
 2. **Network**: Bind to localhost or use reverse proxy with TLS
 3. **User**: Run as unprivileged system user
 4. **Workspace**: Create isolated directory with minimal permissions
-5. **Logs**: Configure log rotation and monitoring
-6. **Limits**: Adjust timeouts and output limits for your use case
+5. **Permissions**: Keep `BLOCKED_PERMISSIONS=network,execute` in production
+6. **Rate Limiting**: Enable rate limiting (`RATE_LIMIT_ENABLED=true`)
+7. **CORS**: Restrict `CORS_ORIGINS` to trusted domains only
+8. **Logs**: Configure log rotation and monitoring
+9. **Limits**: Adjust timeouts, output limits, and request size for your use case
 
 ### Docker (Example)
 

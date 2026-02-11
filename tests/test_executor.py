@@ -1,4 +1,4 @@
-"""Tests for tool executor."""
+"""Tests for tool executor (async version)."""
 
 import asyncio
 import tempfile
@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.storage.database import Database
+from src.storage.database import AsyncDatabase
 from src.storage.repository import AuditRepository
 from src.tools.base import Tool, ToolDefinition, ToolExecutionError, ToolPermission
 from src.tools.executor import ExecutionResultStatus, ToolExecutor
@@ -82,6 +82,38 @@ class LargeOutputTool(Tool):
         return {"result": "x" * 1000}
 
 
+class NetworkTool(Tool):
+    """Tool that requires network permission."""
+
+    @property
+    def definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name="network_tool",
+            description="A tool that needs network",
+            input_schema={"type": "object", "properties": {}},
+            permissions=[ToolPermission.NETWORK],
+        )
+
+    async def execute(self, **kwargs: Any) -> dict[str, Any]:
+        return {"result": "network access"}
+
+
+class ExecuteTool(Tool):
+    """Tool that requires execute permission."""
+
+    @property
+    def definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name="execute_tool",
+            description="A tool that executes commands",
+            input_schema={"type": "object", "properties": {}},
+            permissions=[ToolPermission.EXECUTE],
+        )
+
+    async def execute(self, **kwargs: Any) -> dict[str, Any]:
+        return {"result": "command executed"}
+
+
 @pytest.fixture
 def registry():
     """Create registry with test tools."""
@@ -90,6 +122,8 @@ def registry():
     reg.register(SlowTool())
     reg.register(FailingTool())
     reg.register(LargeOutputTool())
+    reg.register(NetworkTool())
+    reg.register(ExecuteTool())
     return reg
 
 
@@ -100,6 +134,19 @@ def mock_settings():
     settings.max_tool_timeout = 30
     settings.max_output_size = 10000
     settings.workspace_root = Path(tempfile.mkdtemp())
+    # Default: block NETWORK and EXECUTE permissions
+    settings.blocked_permissions = {ToolPermission.NETWORK, ToolPermission.EXECUTE}
+    return settings
+
+
+@pytest.fixture
+def mock_settings_permissive():
+    """Create mock settings with no blocked permissions."""
+    settings = MagicMock()
+    settings.max_tool_timeout = 30
+    settings.max_output_size = 10000
+    settings.workspace_root = Path(tempfile.mkdtemp())
+    settings.blocked_permissions = set()
     return settings
 
 
@@ -110,11 +157,17 @@ def executor(registry, mock_settings):
 
 
 @pytest.fixture
-def executor_with_repo(registry, mock_settings):
+def executor_permissive(registry, mock_settings_permissive):
+    """Create executor with no permission restrictions."""
+    return ToolExecutor(registry=registry, settings=mock_settings_permissive)
+
+
+@pytest.fixture
+async def executor_with_repo(registry, mock_settings):
     """Create executor with audit repository."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        db = Database(Path(tmpdir) / "test.db")
-        db.initialize()
+        db = AsyncDatabase(Path(tmpdir) / "test.db")
+        await db.initialize()
         repo = AuditRepository(db=db)
         yield ToolExecutor(registry=registry, repository=repo, settings=mock_settings)
 
@@ -170,8 +223,8 @@ class TestToolExecutor:
     async def test_execute_with_audit(self, executor_with_repo):
         """Test execution logs to audit repository."""
         # Create a request and decision first (required for foreign key)
-        request = executor_with_repo.repository.create_request("test input")
-        decision = executor_with_repo.repository.create_decision(
+        request = await executor_with_repo.repository.create_request("test input")
+        decision = await executor_with_repo.repository.create_decision(
             request_id=request.id,
             reasoning="Test reasoning",
             selected_tool="success_tool",
@@ -187,7 +240,7 @@ class TestToolExecutor:
         assert result.status == ExecutionResultStatus.SUCCESS
 
         # Verify execution was logged
-        executions = executor_with_repo.repository.get_executions_for_request(request.id)
+        executions = await executor_with_repo.repository.get_executions_for_request(request.id)
         assert len(executions) == 1
         assert executions[0].tool_name == "success_tool"
 
@@ -205,6 +258,38 @@ class TestToolExecutor:
         assert d["status"] == "success"
         assert d["output"] == {"key": "value"}
         assert d["duration_ms"] == 100
+
+
+class TestPermissionEnforcement:
+    """Tests for tool permission enforcement."""
+
+    async def test_network_permission_blocked(self, executor):
+        """Test that NETWORK permission is blocked by default."""
+        result = await executor.execute("network_tool", {})
+
+        assert result.status == ExecutionResultStatus.PERMISSION_DENIED
+        assert "network" in result.error.lower()
+
+    async def test_execute_permission_blocked(self, executor):
+        """Test that EXECUTE permission is blocked by default."""
+        result = await executor.execute("execute_tool", {})
+
+        assert result.status == ExecutionResultStatus.PERMISSION_DENIED
+        assert "execute" in result.error.lower()
+
+    async def test_network_permission_allowed_when_not_blocked(self, executor_permissive):
+        """Test that NETWORK works when not blocked."""
+        result = await executor_permissive.execute("network_tool", {})
+
+        assert result.status == ExecutionResultStatus.SUCCESS
+        assert result.output == {"result": "network access"}
+
+    async def test_execute_permission_allowed_when_not_blocked(self, executor_permissive):
+        """Test that EXECUTE works when not blocked."""
+        result = await executor_permissive.execute("execute_tool", {})
+
+        assert result.status == ExecutionResultStatus.SUCCESS
+        assert result.output == {"result": "command executed"}
 
 
 class TestPathValidation:

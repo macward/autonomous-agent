@@ -1,13 +1,11 @@
 """Agent orchestration logic."""
 
 import json
-import time
 from dataclasses import dataclass, field
-from typing import Any
 
 from src.api.schemas import AgentRunStatus, ToolExecutionInfo
 from src.core.logging import get_logger
-from src.llm.base import LLMConnector, LLMResponse, Message, ResponseType
+from src.llm.base import LLMConnector, Message, ResponseType
 from src.storage.models import RequestStatus
 from src.storage.repository import AuditRepository
 from src.tools.executor import ExecutionResultStatus, ToolExecutor
@@ -29,7 +27,7 @@ class AgentResult:
 
 
 class AgentOrchestrator:
-    """Orchestrates the agent loop: LLM reasoning → tool execution → response.
+    """Orchestrates the agent loop: LLM reasoning -> tool execution -> response.
 
     The agent loop:
     1. Send user input to LLM with available tools
@@ -74,7 +72,7 @@ class AgentOrchestrator:
         tools = self.registry.export_for_llm()
 
         # Mark request as processing
-        self.repository.update_request_status(request_id, RequestStatus.PROCESSING)
+        await self.repository.update_request_status(request_id, RequestStatus.PROCESSING)
 
         try:
             for iteration in range(MAX_ITERATIONS):
@@ -89,7 +87,7 @@ class AgentOrchestrator:
                 # Handle error response
                 if response.response_type == ResponseType.ERROR:
                     logger.error(f"LLM error: {response.error}")
-                    self.repository.update_request_status(
+                    await self.repository.update_request_status(
                         request_id,
                         RequestStatus.FAILED,
                         error=response.error,
@@ -103,7 +101,7 @@ class AgentOrchestrator:
                 # Handle text response (final answer)
                 if response.response_type == ResponseType.TEXT:
                     logger.info("Agent completed with text response")
-                    self.repository.update_request_status(
+                    await self.repository.update_request_status(
                         request_id,
                         RequestStatus.COMPLETED,
                         final_output=response.content,
@@ -117,10 +115,11 @@ class AgentOrchestrator:
                 # Handle tool call
                 if response.response_type == ResponseType.TOOL_CALL:
                     tool_call = response.tool_call
+                    tool_use_id = response.tool_use_id
                     logger.info(f"Agent requested tool: {tool_call.name}")
 
                     # Record decision
-                    decision = self.repository.create_decision(
+                    decision = await self.repository.create_decision(
                         request_id=request_id,
                         reasoning=f"LLM decided to use tool: {tool_call.name}",
                         selected_tool=tool_call.name,
@@ -150,30 +149,39 @@ class AgentOrchestrator:
                         ExecutionResultStatus.VALIDATION_ERROR,
                         ExecutionResultStatus.EXECUTION_ERROR,
                         ExecutionResultStatus.TIMEOUT,
+                        ExecutionResultStatus.PERMISSION_DENIED,
                     ):
-                        # Let the LLM know about the error so it can respond appropriately
                         tool_result = json.dumps({
                             "error": exec_result.error,
                             "status": exec_result.status.value,
                         })
+                        is_error = True
                     else:
                         tool_result = json.dumps(exec_result.output)
+                        is_error = False
 
-                    # Add assistant's tool use to messages
+                    # Build proper message structure for tool use flow
+                    # Add assistant message with tool_use block
                     messages.append(Message(
                         role="assistant",
-                        content=f"[Tool call: {tool_call.name}({json.dumps(tool_call.arguments)})]",
+                        content="",  # Content is in tool_use block
+                        tool_use_id=tool_use_id,
+                        tool_name=tool_call.name,
+                        tool_input=tool_call.arguments,
                     ))
 
-                    # Add tool result to messages
+                    # Add user message with tool_result block
                     messages.append(Message(
                         role="user",
-                        content=f"Tool result: {tool_result}",
+                        content=tool_result,
+                        is_tool_result=True,
+                        tool_use_id=tool_use_id,
+                        is_error=is_error,
                     ))
 
             # Max iterations reached
             logger.warning("Max iterations reached")
-            self.repository.update_request_status(
+            await self.repository.update_request_status(
                 request_id,
                 RequestStatus.FAILED,
                 error="Max iterations reached",
@@ -186,7 +194,7 @@ class AgentOrchestrator:
 
         except Exception as e:
             logger.exception("Unexpected error in agent run")
-            self.repository.update_request_status(
+            await self.repository.update_request_status(
                 request_id,
                 RequestStatus.FAILED,
                 error=str(e),

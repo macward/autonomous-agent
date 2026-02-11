@@ -1,6 +1,6 @@
 # Storage module - SQLite persistence and audit
 
-from src.storage.database import Database, get_database, reset_database
+from src.storage.database import AsyncDatabase, close_database, get_database, reset_database
 from src.storage.models import (
     AgentDecision,
     AgentRequest,
@@ -12,9 +12,10 @@ from src.storage.models import (
 from src.storage.repository import AuditRepository
 
 __all__ = [
-    "Database",
+    "AsyncDatabase",
     "get_database",
     "reset_database",
+    "close_database",
     "AuditRepository",
     "AgentRequest",
     "AgentDecision",

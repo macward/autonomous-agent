@@ -1,6 +1,5 @@
 """Read file tool - reads files with security constraints."""
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from src.tools.base import Tool, ToolDefinition, ToolExecutionError, ToolPermission
@@ -20,7 +19,11 @@ class ReadFileTool(Tool):
     """
 
     MAX_FILE_SIZE = 100 * 1024  # 100 KB
-    BINARY_EXTENSIONS = {".exe", ".bin", ".dll", ".so", ".dylib", ".zip", ".tar", ".gz", ".jpg", ".png", ".gif", ".pdf"}
+    BINARY_EXTENSIONS = {
+        ".exe", ".bin", ".dll", ".so", ".dylib",
+        ".zip", ".tar", ".gz",
+        ".jpg", ".png", ".gif", ".pdf",
+    }
 
     def __init__(self, executor: "ToolExecutor"):
         """Initialize with executor for path validation.
@@ -104,7 +107,7 @@ class ReadFileTool(Tool):
             raise ToolExecutionError(
                 message=f"Cannot access file: {e}",
                 tool_name="read_file",
-            )
+            ) from e
 
         if file_size > self.MAX_FILE_SIZE:
             raise ToolExecutionError(
@@ -115,16 +118,16 @@ class ReadFileTool(Tool):
         # Read file
         try:
             content = validated_path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
+        except UnicodeDecodeError as e:
             raise ToolExecutionError(
                 message=f"File is not valid UTF-8 text: {path_str}",
                 tool_name="read_file",
-            )
-        except PermissionError:
+            ) from e
+        except PermissionError as e:
             raise ToolExecutionError(
                 message=f"Permission denied: {path_str}",
                 tool_name="read_file",
-            )
+            ) from e
 
         # Apply line limit if specified
         lines = content.splitlines()

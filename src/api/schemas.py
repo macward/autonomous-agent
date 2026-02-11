@@ -12,7 +12,9 @@ class AgentRunRequest(BaseModel):
 
     input: str = Field(..., min_length=1, max_length=10000, description="User input text")
 
-    model_config = {"json_schema_extra": {"examples": [{"input": "List the files in the workspace"}]}}
+    model_config = {
+        "json_schema_extra": {"examples": [{"input": "List the files in the workspace"}]}
+    }
 
 
 class AgentRunStatus(str, Enum):
@@ -52,7 +54,7 @@ class AgentRunResponse(BaseModel):
                 {
                     "request_id": "550e8400-e29b-41d4-a716-446655440000",
                     "status": "success",
-                    "output": "The workspace contains 3 files: file1.txt, file2.txt, and config.json",
+                    "output": "The workspace contains 3 files: file1.txt and more",
                     "tool_executions": [
                         {"tool_name": "list_dir", "status": "success", "duration_ms": 5}
                     ],

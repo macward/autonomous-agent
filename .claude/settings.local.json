@@ -11,7 +11,13 @@
       "Bash(uv sync:*)",
       "Bash(pip install:*)",
       "Bash(uv run:*)",
-      "mcp__vibeMCP__tool_log_session"
+      "mcp__vibeMCP__tool_log_session",
+      "Bash(python -m ruff check:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(ruff check:*)",
+      "WebSearch",
+      "WebFetch(domain:console.groq.com)",
+      "Bash(python:*)"
     ]
   }
 }

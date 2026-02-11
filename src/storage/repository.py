@@ -1,4 +1,4 @@
-"""Repository for audit record CRUD operations."""
+"""Repository for audit record CRUD operations (async version)."""
 
 import json
 import uuid
@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from src.core.logging import get_logger
-from src.storage.database import Database, get_database
+from src.storage.database import AsyncDatabase
 from src.storage.models import (
     AgentDecision,
     AgentRequest,
@@ -39,26 +39,24 @@ def _from_json(data: str | None) -> dict[str, Any] | None:
 
 
 class AuditRepository:
-    """Repository for all audit-related operations."""
+    """Repository for all audit-related operations (async)."""
 
-    def __init__(self, db: Database | None = None):
+    def __init__(self, db: AsyncDatabase):
         """Initialize repository with database.
 
         Args:
-            db: Database instance (uses global if not provided)
+            db: AsyncDatabase instance
         """
         self._db = db
 
     @property
-    def db(self) -> Database:
+    def db(self) -> AsyncDatabase:
         """Get database instance."""
-        if self._db is None:
-            self._db = get_database()
         return self._db
 
     # Request operations
 
-    def create_request(self, input_text: str) -> AgentRequest:
+    async def create_request(self, input_text: str) -> AgentRequest:
         """Create a new agent request record.
 
         Args:
@@ -72,8 +70,8 @@ class AuditRepository:
             input_text=input_text,
         )
 
-        with self.db.connection() as conn:
-            conn.execute(
+        async with self.db.connection() as conn:
+            await conn.execute(
                 """
                 INSERT INTO requests (id, created_at, input_text, status)
                 VALUES (?, ?, ?, ?)
@@ -84,7 +82,7 @@ class AuditRepository:
         logger.info(f"Created request {request.id}")
         return request
 
-    def update_request_status(
+    async def update_request_status(
         self,
         request_id: str,
         status: RequestStatus,
@@ -104,8 +102,8 @@ class AuditRepository:
             RequestStatus.FAILED,
         ) else None
 
-        with self.db.connection() as conn:
-            conn.execute(
+        async with self.db.connection() as conn:
+            await conn.execute(
                 """
                 UPDATE requests
                 SET status = ?, completed_at = ?, final_output = ?, error = ?
@@ -116,7 +114,7 @@ class AuditRepository:
 
         logger.info(f"Updated request {request_id} to {status}")
 
-    def get_request(self, request_id: str) -> AgentRequest | None:
+    async def get_request(self, request_id: str) -> AgentRequest | None:
         """Get a request by ID.
 
         Args:
@@ -125,11 +123,12 @@ class AuditRepository:
         Returns:
             Request record or None
         """
-        with self.db.connection() as conn:
-            row = conn.execute(
+        async with self.db.connection() as conn:
+            cursor = await conn.execute(
                 "SELECT * FROM requests WHERE id = ?",
                 (request_id,),
-            ).fetchone()
+            )
+            row = await cursor.fetchone()
 
         if row is None:
             return None
@@ -139,14 +138,16 @@ class AuditRepository:
             created_at=datetime.fromisoformat(row["created_at"]),
             input_text=row["input_text"],
             status=RequestStatus(row["status"]),
-            completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
+            completed_at=(
+                datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None
+            ),
             final_output=row["final_output"],
             error=row["error"],
         )
 
     # Decision operations
 
-    def create_decision(
+    async def create_decision(
         self,
         request_id: str,
         reasoning: str,
@@ -172,10 +173,11 @@ class AuditRepository:
             tool_input=tool_input,
         )
 
-        with self.db.connection() as conn:
-            conn.execute(
+        async with self.db.connection() as conn:
+            await conn.execute(
                 """
-                INSERT INTO decisions (id, request_id, created_at, reasoning, selected_tool, tool_input)
+                INSERT INTO decisions
+                (id, request_id, created_at, reasoning, selected_tool, tool_input)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -191,7 +193,7 @@ class AuditRepository:
         logger.info(f"Created decision {decision.id} for request {request_id}")
         return decision
 
-    def get_decisions_for_request(self, request_id: str) -> list[AgentDecision]:
+    async def get_decisions_for_request(self, request_id: str) -> list[AgentDecision]:
         """Get all decisions for a request.
 
         Args:
@@ -200,11 +202,12 @@ class AuditRepository:
         Returns:
             List of decision records
         """
-        with self.db.connection() as conn:
-            rows = conn.execute(
+        async with self.db.connection() as conn:
+            cursor = await conn.execute(
                 "SELECT * FROM decisions WHERE request_id = ? ORDER BY created_at",
                 (request_id,),
-            ).fetchall()
+            )
+            rows = await cursor.fetchall()
 
         return [
             AgentDecision(
@@ -220,7 +223,7 @@ class AuditRepository:
 
     # Execution operations
 
-    def create_execution(
+    async def create_execution(
         self,
         decision_id: str,
         request_id: str,
@@ -258,11 +261,11 @@ class AuditRepository:
             duration_ms=duration_ms,
         )
 
-        with self.db.connection() as conn:
-            conn.execute(
+        async with self.db.connection() as conn:
+            await conn.execute(
                 """
-                INSERT INTO executions
-                (id, decision_id, request_id, created_at, tool_name, tool_input, status, output, error, duration_ms)
+                INSERT INTO executions (id, decision_id, request_id, created_at,
+                    tool_name, tool_input, status, output, error, duration_ms)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -282,7 +285,7 @@ class AuditRepository:
         logger.info(f"Created execution {execution.id} for tool {tool_name}")
         return execution
 
-    def get_executions_for_request(self, request_id: str) -> list[ToolExecution]:
+    async def get_executions_for_request(self, request_id: str) -> list[ToolExecution]:
         """Get all executions for a request.
 
         Args:
@@ -291,11 +294,12 @@ class AuditRepository:
         Returns:
             List of execution records
         """
-        with self.db.connection() as conn:
-            rows = conn.execute(
+        async with self.db.connection() as conn:
+            cursor = await conn.execute(
                 "SELECT * FROM executions WHERE request_id = ? ORDER BY created_at",
                 (request_id,),
-            ).fetchall()
+            )
+            rows = await cursor.fetchall()
 
         return [
             ToolExecution(
@@ -315,7 +319,7 @@ class AuditRepository:
 
     # Audit log operations
 
-    def log(
+    async def log(
         self,
         level: str,
         component: str,
@@ -344,10 +348,11 @@ class AuditRepository:
             request_id=request_id,
         )
 
-        with self.db.connection() as conn:
-            conn.execute(
+        async with self.db.connection() as conn:
+            await conn.execute(
                 """
-                INSERT INTO audit_logs (id, created_at, level, component, message, context, request_id)
+                INSERT INTO audit_logs
+                (id, created_at, level, component, message, context, request_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -363,7 +368,7 @@ class AuditRepository:
 
         return audit
 
-    def get_audit_logs(
+    async def get_audit_logs(
         self,
         request_id: str | None = None,
         level: str | None = None,
@@ -393,8 +398,9 @@ class AuditRepository:
         query += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
 
-        with self.db.connection() as conn:
-            rows = conn.execute(query, params).fetchall()
+        async with self.db.connection() as conn:
+            cursor = await conn.execute(query, params)
+            rows = await cursor.fetchall()
 
         return [
             AuditLog(
@@ -411,7 +417,7 @@ class AuditRepository:
 
     # Query methods
 
-    def get_recent_requests(self, limit: int = 10) -> list[AgentRequest]:
+    async def get_recent_requests(self, limit: int = 10) -> list[AgentRequest]:
         """Get recent requests.
 
         Args:
@@ -420,11 +426,12 @@ class AuditRepository:
         Returns:
             List of recent requests
         """
-        with self.db.connection() as conn:
-            rows = conn.execute(
+        async with self.db.connection() as conn:
+            cursor = await conn.execute(
                 "SELECT * FROM requests ORDER BY created_at DESC LIMIT ?",
                 (limit,),
-            ).fetchall()
+            )
+            rows = await cursor.fetchall()
 
         return [
             AgentRequest(
@@ -432,30 +439,39 @@ class AuditRepository:
                 created_at=datetime.fromisoformat(row["created_at"]),
                 input_text=row["input_text"],
                 status=RequestStatus(row["status"]),
-                completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
+                completed_at=(
+                datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None
+            ),
                 final_output=row["final_output"],
                 error=row["error"],
             )
             for row in rows
         ]
 
-    def get_execution_stats(self) -> dict[str, Any]:
+    async def get_execution_stats(self) -> dict[str, Any]:
         """Get execution statistics.
 
         Returns:
             Dictionary with execution stats
         """
-        with self.db.connection() as conn:
-            total = conn.execute("SELECT COUNT(*) FROM executions").fetchone()[0]
-            by_status = conn.execute(
+        async with self.db.connection() as conn:
+            cursor = await conn.execute("SELECT COUNT(*) FROM executions")
+            total = (await cursor.fetchone())[0]
+
+            cursor = await conn.execute(
                 "SELECT status, COUNT(*) as count FROM executions GROUP BY status"
-            ).fetchall()
-            by_tool = conn.execute(
+            )
+            by_status = await cursor.fetchall()
+
+            cursor = await conn.execute(
                 "SELECT tool_name, COUNT(*) as count FROM executions GROUP BY tool_name"
-            ).fetchall()
-            avg_duration = conn.execute(
+            )
+            by_tool = await cursor.fetchall()
+
+            cursor = await conn.execute(
                 "SELECT AVG(duration_ms) FROM executions WHERE duration_ms IS NOT NULL"
-            ).fetchone()[0]
+            )
+            avg_duration = (await cursor.fetchone())[0]
 
         return {
             "total_executions": total,

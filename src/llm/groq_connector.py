@@ -1,15 +1,15 @@
-"""Anthropic Claude connector implementation with native tool_use support."""
+"""Groq connector implementation with tool use support."""
 
 import asyncio
+import json
 from typing import Any
 
-import anthropic
-from anthropic import APIError, APITimeoutError, RateLimitError
+from groq import APIError, APITimeoutError, AsyncGroq, RateLimitError
 
 from src.core.logging import get_logger
 from src.llm.base import LLMConnector, LLMError, LLMResponse, Message
 
-logger = get_logger("llm.anthropic")
+logger = get_logger("llm.groq")
 
 # Default system prompt for the agent
 DEFAULT_SYSTEM_PROMPT = """You are an autonomous agent that can execute tools to help users.
@@ -25,17 +25,17 @@ If you cannot accomplish a task with the available tools, explain why clearly.
 IMPORTANT: Only use tools that are explicitly provided. Never fabricate tool names or parameters."""
 
 
-class AnthropicConnector(LLMConnector):
-    """Connector for Anthropic Claude API with native tool_use support.
+class GroqConnector(LLMConnector):
+    """Connector for Groq API with tool use support.
 
     Features:
     - Async API calls
-    - Native tool_use/tool_result message structure
+    - OpenAI-compatible tool use format
     - Automatic retry with exponential backoff
     - Token usage tracking
     """
 
-    DEFAULT_MODEL = "claude-sonnet-4-20250514"
+    DEFAULT_MODEL = "llama-3.3-70b-versatile"
     MAX_RETRIES = 3
     BASE_DELAY = 1.0  # seconds
 
@@ -48,116 +48,103 @@ class AnthropicConnector(LLMConnector):
         """Initialize connector.
 
         Args:
-            api_key: Anthropic API key
-            model: Model to use (default: claude-sonnet-4-20250514)
+            api_key: Groq API key
+            model: Model to use (default: llama-3.3-70b-versatile)
             max_tokens: Maximum tokens in response
         """
-        self.client = anthropic.AsyncAnthropic(api_key=api_key)
+        self.client = AsyncGroq(api_key=api_key)
         self.model = model or self.DEFAULT_MODEL
         self.max_tokens = max_tokens
 
     def _convert_tools(self, tools: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
-        """Convert tools from generic format to Anthropic format.
+        """Convert tools to Groq format (OpenAI-compatible).
 
         Args:
             tools: Tools in generic LLM format
 
         Returns:
-            Tools in Anthropic format
+            Tools in Groq format
         """
         if not tools:
             return None
 
-        anthropic_tools = []
-        for tool in tools:
-            if tool.get("type") == "function":
-                func = tool["function"]
-                anthropic_tools.append({
-                    "name": func["name"],
-                    "description": func["description"],
-                    "input_schema": func["parameters"],
-                })
-            else:
-                # Already in Anthropic format
-                anthropic_tools.append(tool)
-
-        return anthropic_tools
+        # Groq uses OpenAI format which matches our generic format
+        return tools
 
     def _convert_messages(self, messages: list[Message]) -> list[dict[str, Any]]:
-        """Convert messages to Anthropic format with native tool_use/tool_result support.
+        """Convert messages to Groq format with tool use support.
 
         Args:
             messages: Messages in generic format
 
         Returns:
-            Messages in Anthropic format
+            Messages in Groq/OpenAI format
         """
-        anthropic_messages = []
+        groq_messages = []
 
         for msg in messages:
             if msg.is_tool_result:
-                # User message with tool_result block
-                anthropic_messages.append({
-                    "role": "user",
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": msg.tool_use_id,
-                        "content": msg.content,
-                        "is_error": msg.is_error,
-                    }],
+                # Tool result message
+                groq_messages.append({
+                    "role": "tool",
+                    "tool_call_id": msg.tool_use_id,
+                    "name": msg.tool_name,
+                    "content": msg.content,
                 })
             elif msg.tool_use_id and msg.tool_name:
-                # Assistant message with tool_use block
-                anthropic_messages.append({
+                # Assistant message with tool call
+                groq_messages.append({
                     "role": "assistant",
-                    "content": [{
-                        "type": "tool_use",
+                    "content": None,
+                    "tool_calls": [{
                         "id": msg.tool_use_id,
-                        "name": msg.tool_name,
-                        "input": msg.tool_input or {},
+                        "type": "function",
+                        "function": {
+                            "name": msg.tool_name,
+                            "arguments": json.dumps(msg.tool_input or {}),
+                        },
                     }],
                 })
             else:
                 # Simple text message
-                anthropic_messages.append({
+                groq_messages.append({
                     "role": msg.role,
                     "content": msg.content,
                 })
 
-        return anthropic_messages
+        return groq_messages
 
     def _parse_response(self, response: Any) -> LLMResponse:
-        """Parse Anthropic response into LLMResponse.
+        """Parse Groq response into LLMResponse.
 
         Args:
-            response: Raw Anthropic API response
+            response: Raw Groq API response
 
         Returns:
             Parsed LLMResponse
         """
-        usage = {
-            "input_tokens": response.usage.input_tokens,
-            "output_tokens": response.usage.output_tokens,
-        }
+        usage = {}
+        if response.usage:
+            usage = {
+                "input_tokens": response.usage.prompt_tokens,
+                "output_tokens": response.usage.completion_tokens,
+            }
 
-        # Check for tool use
-        for block in response.content:
-            if block.type == "tool_use":
-                return LLMResponse.tool(
-                    name=block.name,
-                    arguments=block.input,
-                    tool_use_id=block.id,
-                    raw=response,
-                    usage=usage,
-                )
+        message = response.choices[0].message
 
-        # Extract text content
-        text_parts = []
-        for block in response.content:
-            if block.type == "text":
-                text_parts.append(block.text)
+        # Check for tool calls
+        if message.tool_calls:
+            tool_call = message.tool_calls[0]
+            return LLMResponse.tool(
+                name=tool_call.function.name,
+                arguments=json.loads(tool_call.function.arguments),
+                tool_use_id=tool_call.id,
+                raw=response,
+                usage=usage,
+            )
 
-        content = "\n".join(text_parts) if text_parts else ""
+        # Text response
+        content = message.content or ""
         return LLMResponse.text(content, raw=response, usage=usage)
 
     async def _call_with_retry(
@@ -169,8 +156,8 @@ class AnthropicConnector(LLMConnector):
         """Make API call with retry logic.
 
         Args:
-            messages: Messages in Anthropic format
-            tools: Tools in Anthropic format
+            messages: Messages in Groq format
+            tools: Tools in Groq format
             system_prompt: System prompt
 
         Returns:
@@ -181,19 +168,22 @@ class AnthropicConnector(LLMConnector):
         """
         last_error = None
 
+        # Prepend system message
+        full_messages = [{"role": "system", "content": system_prompt}] + messages
+
         for attempt in range(self.MAX_RETRIES):
             try:
                 kwargs: dict[str, Any] = {
                     "model": self.model,
                     "max_tokens": self.max_tokens,
-                    "system": system_prompt,
-                    "messages": messages,
+                    "messages": full_messages,
                 }
 
                 if tools:
                     kwargs["tools"] = tools
+                    kwargs["tool_choice"] = "auto"
 
-                response = await self.client.messages.create(**kwargs)
+                response = await self.client.chat.completions.create(**kwargs)
                 return response
 
             except RateLimitError as e:
@@ -221,7 +211,7 @@ class AnthropicConnector(LLMConnector):
         tools: list[dict[str, Any]] | None = None,
         system_prompt: str | None = None,
     ) -> LLMResponse:
-        """Send messages to Claude and get a response.
+        """Send messages to Groq and get a response.
 
         Args:
             messages: Conversation history
@@ -232,13 +222,13 @@ class AnthropicConnector(LLMConnector):
             LLM response
         """
         try:
-            anthropic_messages = self._convert_messages(messages)
-            anthropic_tools = self._convert_tools(tools)
+            groq_messages = self._convert_messages(messages)
+            groq_tools = self._convert_tools(tools)
             system = system_prompt or DEFAULT_SYSTEM_PROMPT
 
             response = await self._call_with_retry(
-                messages=anthropic_messages,
-                tools=anthropic_tools,
+                messages=groq_messages,
+                tools=groq_tools,
                 system_prompt=system,
             )
 

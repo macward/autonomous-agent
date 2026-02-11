@@ -1,6 +1,5 @@
 """List directory tool - lists files in allowed directories."""
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from src.tools.base import Tool, ToolDefinition, ToolExecutionError, ToolPermission
@@ -103,7 +102,7 @@ class ListDirTool(Tool):
             raise ToolExecutionError(
                 message=f"Permission denied: {path_str}",
                 tool_name="list_dir",
-            )
+            ) from e
 
         return {
             "path": path_str,
